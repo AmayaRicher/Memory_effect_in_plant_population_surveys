@@ -1,0 +1,738 @@
+---
+title: "Memory effect experiment: simulation-based power analysis"
+format: html
+editor: visual
+---
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(kableExtra)
+library(AHMbook)
+```
+
+# Setting parameters
+
+```{r}
+Parameters <- data.frame(
+  Variable=c('N_s',
+             'count_tot_TRUE',
+             'count_tot_TRUE_sd',
+             'N_q',
+             'N_o',
+             'prop_count',
+             'prop_method',
+             'prop_modif',
+             'p11_n',
+             'p10_n',
+             'p11_m',
+             'p10_m',
+             'p11_nm',
+             'p10_nm',
+             'p11_n_sd',
+             'p10_n_sd',
+             'p11_m_sd',
+             'p10_m_sd',
+             'p11_nm_sd',
+             'p10_nm_sd'
+             ),
+  Definition=c('Number of species',
+             'Mean total number of individuals in a quadrat',
+             'Standard deviation of Count_tot_TRUE',
+             'Number of quadrats per species',
+             'Number of observers per species',
+             'Proportion of observations of quadrats that are done collecting counts rather than DND data',
+             'Relative proportions of observations of quadrats that are done by naive observers not using a memory sheet (N), observer using a memory sheet directly (M), or obsevers going over quadrats first naively then with a memory sheet (NM). The prop_method vector is c(propN, propM, propNM).',
+             'Levels of proportion of modification (extinction or colonisation) induced in the count data of the moemory sheets (list)',
+             'Detection probability of a naïf observer (no memory sheets)',
+             'False-postive error probability of a naïf observer (no memory sheets)',
+             'Detection probability of an observer directly using memory sheets',
+             'False-postive error probability of an observer directly using memory sheets',
+             'Detection probability of an observer using memory sheets after a naïve observation',
+             'False-postive error probability of an observer using memory sheets after a naïve observation',
+             'Standard deviation of p11_n',
+             'Standard deviation of p10_n',
+             'Standard deviation of p11_m',
+             'Standard deviation of p10_m',
+             'Standard deviation of p11_nm',
+             'Standard deviation of p10_nm'),
+  Type=c('fixed',
+             'fixed',
+             'fixed',
+             'variable',
+             'variable',
+             'variable',
+             'fixed',
+             'fixed',
+             'fixed',
+             'fixed',
+             'fixed',
+             'fixed',
+             'fixed',
+             'fixed',
+             'variable',
+             'variable',
+             'variable',
+             'variable',
+             'variable',
+             'variable'
+             ),
+  Value =c('5',
+             '100',
+             '50',
+             '{10, 18}',
+             '{6, 8}',
+             '{0.5, 0.8}',
+             'c(0.2,0.4,0.4)',
+             'c(-0.2, -0.1, -0.05, 0, 0.05, 0.1, 0.5)',
+             '0.6',
+             '0.02',
+             '0.8',
+             '0.01',
+             '0.8',
+             '0.01',
+             '{0.1, 0.3, 0.5}',
+             '{0.01, 0.03, 0.05}',
+             '{0.1, 0.3, 0.5}',
+             '{0.01, 0.03, 0.05}',
+             '{0.1, 0.3, 0.5}',
+             '{0.01, 0.03, 0.05}'
+             ))
+```
+
+```{r}
+Parameters%>%
+  kbl(format = 'html') %>%
+  kable_classic(full_width = F, html_font = "LM Roman") %>%
+  kable_styling(row_label_position = 1, bootstrap_options = c("striped", "hover"), font_size = 13) %>%
+  row_spec(0, background = "lightgrey")
+```
+
+```{r}
+N_s <- 5
+count_tot_TRUE <- 100
+count_tot_TRUE_sd <- 50
+N_q_list <- c(10,18)
+N_o_list <- c(6,8)
+prop_count_list <- c(0.5, 0.8)
+prop_method <- c(0.2,0.4,0.4)
+prop_modif <- c(-0.2, -0.1, -0.05, 0, 0.05, 0.1, 0.2)
+p11_n <- 0.6
+p10_n <- 0.02
+p11_m <- 0.8
+p10_m <- 0.01
+p11_nm <- 0.8
+p10_nm <- 0.01
+p11_n_sd <- 0.1
+p10_n_sd <- 0.01
+p11_m_sd <- 0.1
+p10_m_sd <- 0.01
+p11_nm_sd <- 0.1
+p10_nm_sd <- 0.01
+```
+
+In the following sections, we will guide the process of data simulation step by step for fixed values of parameters.\
+We will then write a loop to simulate 1000 iterations per combination of parameters, and this for each combination.
+
+We fix the variable parameters to an arbitrary value:
+
+```{r}
+N_q <- 18
+N_o <- 6
+prop_count <- 0.5
+```
+
+# Simulating true data
+
+We are going to simulate a Poisson point process according to Kéry et Royle (2016) \[1\]. We use the sim.fn function from the AHMbook package. This function takes the length of each size of the quadrat (in arbitrary units), the size of a cell and the intensity, corresponding to the average number of points (plants) per unit area. We calculate the intensity by dividing the number of individuals in the quadrat (count_tot_TRUE) by the number of cells, here 100.
+
+We generate data for true counts and DND data for all quadrats in all species:
+
+```{r}
+count_data_TRUE_function <- function(N_s, N_q) {
+
+Count_data_TRUE <- data.frame()
+
+for (species in (1:N_s)){#species
+  count_tot_TRUE_list = round(rnorm(n=N_q, mean = count_tot_TRUE, sd = count_tot_TRUE_sd),0) #list of count_tot_TRUE for all N_q quadrats of the species
+  for (k in c(1:length(count_tot_TRUE_list))){
+    if (count_tot_TRUE_list[k] < 0){
+      count_tot_TRUE_list[k] <- 0
+    }
+  }
+  for (quadrat in (1:N_q)){#quadrat
+    intensity <- count_tot_TRUE_list[quadrat]/100
+    sim <- sim.fn(quad.size = 10, cell.size = 1, intensity = intensity, show.plot = FALSE)
+    sim$N <- cbind(cell_row = rownames(sim$N), sim$N)
+    rownames(sim$N) <- NULL
+    Count_data_TRUE <- rbind(Count_data_TRUE,cbind(species = species, quadrat = quadrat, sim$N)) #count data
+    rownames(Count_data_TRUE) <- NULL
+  }
+}
+
+Count_data_TRUE <- Count_data_TRUE %>%
+  mutate(species = as.numeric(species),
+         quadrat = as.numeric(quadrat),
+         `(0,1]` = as.numeric(`(0,1]`),
+         `(1,2]` = as.numeric(`(1,2]`),
+         `(2,3]` = as.numeric(`(2,3]`),
+         `(3,4]` = as.numeric(`(3,4]`),
+         `(4,5]` = as.numeric(`(4,5]`),
+         `(5,6]` = as.numeric(`(5,6]`),
+         `(6,7]` = as.numeric(`(6,7]`),
+         `(7,8]` = as.numeric(`(7,8]`),
+         `(8,9]` = as.numeric(`(8,9]`),
+         `(9,10]` = as.numeric(`(9,10]`))
+
+return(Count_data_TRUE)
+
+}
+
+Count_data_TRUE <- count_data_TRUE_function(N_s,N_q)
+```
+
+# Simulating memory sheets
+
+The TRUE data is one type of memory sheet, but we are also going to induce artificial extinction (or FN errors) and artificial colonisation (or FP errors) in the memory sheets. We have a gradient of proportion modification, from extinctions and colonisation (different levels stored in prop_modif). To simplify the sampling design, I will distribute a balanced proportion of all combinations amongst observers. In other words, during the experiment, each level of modification in prop_modif will each be in (approximately, because numbers have to be rounded to integers) an equal number of memory sheets.
+
+Some memory sheets will be in count data and others in DND data, so I decide to modify the count data with the levels of extinction and colonization, and then convert to DND data. This means that there will be less change in the memory sheets containing DND data compared to counts: a cell with 3 individuals losing one individual (because of induced extinction) will only have 2 individuals, but will still be occupied.
+
+The proportion of quadrats that will be observed in count data is prop_count.
+
+The proportion of quadrats that will be done naively (N), with memory (M) or naively then with memory (NM) is prop_method.
+
+```{r}
+Count_data_TRUE_long <- Count_data_TRUE %>%
+  pivot_longer(cols = c(`(0,1]`:`(9,10]`), names_to = 'cell_column', values_to = 'count_TRUE_0')
+  
+Count_data_TRUE_long <- Count_data_TRUE_long %>%
+  left_join(.,
+    Count_data_TRUE_long %>%
+  group_by(species, quadrat) %>%
+  summarise(count_tot_TRUE_0=sum(count_TRUE_0))
+  )
+
+modif_data_memory_sheets <- function(prop_modif, Count_data_TRUE_long) {
+
+for (i in prop_modif) {
+  if (i!=0) {
+    if (i > 0) { # increase
+    Count_data_TRUE_long <- Count_data_TRUE_long %>%
+      group_by(species, quadrat, cell_row, cell_column) %>%
+      mutate(count_TRUE_i = count_TRUE_0 + rpois(1,count_tot_TRUE_0*i/100)) %>% #100 because 100 cells
+      ungroup()
+    names(Count_data_TRUE_long)[names(Count_data_TRUE_long) == 'count_TRUE_i'] <- paste('count_TRUE_', i, sep = '')
+    }
+    if (i < 0) { #decrease
+    Count_data_TRUE_long <- Count_data_TRUE_long %>%
+      group_by(species, quadrat, cell_row, cell_column) %>%
+      mutate(count_TRUE_i = case_when({(count_TRUE_0 - rpois(1,count_tot_TRUE_0*abs(i)/100)) >= 0} ~ count_TRUE_0 - rpois(1,count_tot_TRUE_0*abs(i)/100),
+                                      TRUE ~ 0)) %>% #never less than 0 individuals in a cells
+      ungroup()
+    names(Count_data_TRUE_long)[names(Count_data_TRUE_long) == 'count_TRUE_i'] <- paste('count_TRUE_', i, sep = '')
+      }
+   }
+}
+  
+  return(Count_data_TRUE_long)
+}
+
+Count_data_TRUE_long <- modif_data_memory_sheets(prop_modif, Count_data_TRUE_long)
+```
+
+Let's check the changes in the total abundances match with the proportion we have set:
+
+```{r}
+#this section of the code only works for prop_modif = c(-0.2,-0.1,-0.05,0,0.05,0.1,0.2)
+Count_data_TRUE_long %>% 
+  group_by(species, quadrat) %>%
+  #summarise(sum=sum(count_TRUE_0), sum0.2 = sum(count_TRUE_0.2)) %>% View()
+  summarise(prop_tot_0 = (sum(count_TRUE_0)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            `prop_tot_-0.2` = (sum(`count_TRUE_-0.2`)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            `prop_tot_-0.1` = (sum(`count_TRUE_-0.1`)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            `prop_tot_-0.05` = (sum(`count_TRUE_-0.05`)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            prop_tot_0.05 = (sum(`count_TRUE_0.05`)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            prop_tot_0.1 = (sum(`count_TRUE_0.1`)-sum(count_TRUE_0))/sum(count_TRUE_0),
+            prop_tot_0.2 = (sum(`count_TRUE_0.2`)-sum(count_TRUE_0))/sum(count_TRUE_0)) %>%
+  filter(!is.na(prop_tot_0)) %>% #removing NAs from empty quadrats
+  ungroup() %>% #View()
+  pivot_longer(cols = prop_tot_0:prop_tot_0.2,
+               names_to = 'prop_modif',
+               names_prefix = 'prop_tot_',
+               values_to = 'prop_tot') %>%
+  mutate(prop_modif = as.numeric(prop_modif)) %>%
+  ggplot(aes(x=prop_modif, y = prop_tot)) +
+  geom_abline(intercept = 0, slope=1, linetype = 'dashed') +
+  geom_boxplot(aes(group=as.factor(prop_modif))) +
+  theme_bw()
+```
+
+```{r}
+Count_data_TRUE_long <- Count_data_TRUE_long %>%
+  pivot_longer(cols = -c(species:cell_column),
+               names_to = 'prop_modif',
+               names_prefix = 'count_TRUE_',
+               values_to = 'count_TRUE') %>% #count_TRUE refers here to 'true' data in memory sheets compared to observation data from observers, but TRUE data can be modified in the memory sheets with induced extinction or colonisation
+  mutate(prop_modif = as.numeric(prop_modif)) %>%
+  relocate(prop_modif, .after = quadrat)
+```
+
+We create the Count_data_memory_sheets table, containing all memory sheets (TRUE and modified data):
+
+```{r}
+Count_data_memory_sheets <- Count_data_TRUE_long %>%
+  pivot_wider(names_from = cell_column,
+              values_from = count_TRUE)
+```
+
+The DND_data_memory_sheets contains DND data from the count memory sheets:
+
+```{r}
+DND_data_memory_sheets <- Count_data_TRUE_long %>%
+  mutate(DND_TRUE = case_when({count_TRUE > 0} ~ 1,
+                              {count_TRUE == 0} ~ 0
+                              )) %>%
+  dplyr::select(-c(count_TRUE)) %>%
+  pivot_wider(names_from = cell_column,
+              values_from = DND_TRUE)
+```
+
+# Simulating observation data
+
+We want to simulate observation data for the following fixed parameters: 5 sessions, 10 quadrats each, 4 observers per session. This corresponds to 5\*10\*4 = 200 observations of quadrats. We fixed prop_count = 0.5 for now, meaning that half of all quadrats are going to be prospected by collecting counts, and half by DND data. To simply things, we decided to use a balanced proportion of memory sheets, meaning that 1/7th of all observations will correspond to one of the levels of modification of prop_modif (corresponding to around 28 quadrats observed for each level of modification).
+
+## Sampling design
+
+Before simulating observation data using the detection and false-negative error probabilities we have fixed, we are going to simulate a table containing all 200 quadrats \* observer \* level of modification \* count/DND (metric) \* naive/memory/naive-then-memory (method).
+
+To be able to adapt this table to variable parameters, we create a function, sampling_design_function, to generate the Sampling_design table depending on the parameters chosen.
+
+```{r}
+sampling_design_function <- function(N_s, N_q, N_o, prop_count, prop_method, prop_modif){
+  
+  n_tot_q <- N_s * N_q * N_o #total number of observation of quadrats
+  
+  Sampling_design <- data.frame(matrix(data='', nrow = n_tot_q, ncol = 6))
+  colnames(Sampling_design) <- c('species', 'quadrat', 'obs_id', 'metric', 'method', 'prop_modif')
+  
+  #species column:
+  species_column <- c()
+  for (i in seq(1,N_s)) {
+    species_column <- c(species_column, c(rep(i, N_q * N_o)))
+  }
+  
+  #quadrat column:
+  quadrat_column <- c()
+  for (i in seq(1,N_q)) {
+    quadrat_column <- c(quadrat_column, c(rep(i, N_o)))
+  }
+  quadrat_column <- rep(quadrat_column, N_s)
+  
+  #ob_id column:
+  obs_id_column <- c()
+  for (i in seq(1,N_s)) {
+    obs_id_column <- c(obs_id_column, c(paste(rep(i, N_q * N_o),seq(1,N_o), sep = '.')))
+  }
+  
+  #metric column:
+  n_q_count <- round(n_tot_q*prop_count, 0) #number of quadrats that are observed with counts
+  n_q_DND <- n_tot_q - n_q_count
+  metric_column <- c(rep('count',n_q_count), rep('DND', n_q_DND))
+  
+  #method column:
+  n_q_N <- round(n_tot_q*prop_method[1], 0) #number of quadrats done by naive observers
+  n_q_M <- round(n_tot_q*prop_method[2], 0) #number of quadrats done with memory direclty
+  n_q_NM <- n_tot_q - (n_q_N + n_q_M)
+  method_column <- c(rep('N',n_q_N), rep('M', n_q_M), rep('NM', n_q_NM))
+
+  Sampling_design$species <- species_column
+  Sampling_design$quadrat <- quadrat_column
+  Sampling_design$obs_id <- obs_id_column
+  Sampling_design$metric <- sample(metric_column)
+  Sampling_design$method <- sample(method_column)
+  
+  for (i in c(1:nrow(Sampling_design))) {
+    if (Sampling_design[i,]$method != 'N') {
+      Sampling_design[i,]$prop_modif <- sample(prop_modif,1) #random pull of one of the modification levels for method == 'M' or 'NM'
+    }
+    else {
+      Sampling_design[i,]$prop_modif <- NA #if naive, no memory sheets so no modification level
+    }
+  }
+  Sampling_design <- Sampling_design %>%
+    mutate(prop_modif = as.double(prop_modif))
+  
+  return(Sampling_design)
+}
+```
+
+```{r}
+Sampling_design <- sampling_design_function(N_s, N_q, N_o, prop_count, prop_method, prop_modif)
+```
+
+Let's just check that there are about as much of each level of modifications of the data in memory sheets:
+
+```{r}
+Sampling_design %>%
+  group_by(prop_modif) %>%
+  summarise(n=n())
+```
+
+It's well-balanced, there are no levels of modification over-represented in the memory sheets.
+
+## Observation data
+
+Now, based on the sampling design, we will simulate observation data for each of the observed quadrats.
+
+We assume that detection and false-positive error probabilities vary from one observed quadrat to another, depending on the method used. We assume that all observers have the same *mean* probabilities for a same method, hence we only vary mean probabilities depending on the method used.
+
+Equally importantly, we assume that the detection probability of an individual is the same than an occupied cell, and same for false-positive error probability. We can assume this because densities of individuals per cell are quite low in such small cells.
+
+```{r}
+simulated_data_function <- function(Count_data_TRUE_long, Sampling_design, p11_n, p10_n, p11_m, p10_m, p11_nm, p10_nm, p11_n_sd, p10_n_sd, p11_m_sd, p10_m_sd, p11_nm_sd, p10_nm_sd){
+  
+  #first pulling mean probabilites per method for each observer:
+  Proba_obs <- data.frame(matrix(data='', nrow=N_s*N_o, ncol=9))
+  colnames(Proba_obs) <- c('N_s','N_o','obs_id','p11_n_obs','p10_n_obs','p11_m_obs','p10_m_obs','p11_nm_obs','p10_nm_obs')
+  Proba_obs$N_s <- sort(c(rep(c(1:N_s), N_o)))
+  Proba_obs$N_o <- rep(c(1:N_o))
+  Proba_obs$obs_id <- paste(c(1:N_s),rep(c(1:N_o),N_s),sep='.')
+  Proba_obs <- Proba_obs %>%
+    mutate(p11_n_obs = as.double(p11_n_obs),
+           p10_n_obs = as.double(p10_n_obs),
+           p11_m_obs = as.double(p11_m_obs),
+           p10_m_obs = as.double(p10_m_obs),
+           p11_nm_obs = as.double(p11_nm_obs),
+           p10_nm_obs = as.double(p10_nm_obs)) %>%
+    dplyr::select(-c(N_s,N_o))
+  for (i in Proba_obs$obs_id){
+      Proba_obs[Proba_obs$obs_id == i,]$p11_n_obs <- round(rnorm(1,p11_n,p11_n_sd),2)
+      Proba_obs[Proba_obs$obs_id == i,]$p10_n_obs <- round(rnorm(1,p10_n,p10_n_sd),2)
+      Proba_obs[Proba_obs$obs_id == i,]$p11_m_obs <- round(rnorm(1,p11_m,p11_m_sd),2)
+      Proba_obs[Proba_obs$obs_id == i,]$p10_m_obs <- round(rnorm(1,p10_m,p10_m_sd),2)
+      Proba_obs[Proba_obs$obs_id == i,]$p11_nm_obs <- round(rnorm(1,p11_nm,p11_nm_sd),2)
+      Proba_obs[Proba_obs$obs_id == i,]$p10_nm_obs <- round(rnorm(1,p10_nm,p10_nm_sd),2)
+  }
+  
+  Simulated_data <- Count_data_TRUE_long %>%
+    filter(prop_modif == 0) %>%
+    dplyr::select(-c(prop_modif)) %>%
+   left_join(Sampling_design, ., by = join_by(species, quadrat)) %>%
+    mutate(DND_TRUE = case_when({count_TRUE > 0} ~ 1,
+                              {count_TRUE == 0} ~ 0
+                              )) %>%
+    left_join(Proba_obs, by = join_by(obs_id)) %>%
+    group_by(species, quadrat, obs_id) %>%
+      mutate(p11 = case_when({method == 'N'} ~ round(rnorm(1,p11_n_obs,p11_n_sd),2),
+                               {method == 'M'} ~ round(rnorm(1,p11_m_obs,p11_m_sd),2),
+                               {method == 'NM'} ~ round(rnorm(1,p11_nm_obs,p11_nm_sd),2)),
+             p10 = case_when({method == 'N'} ~ round(rnorm(1,p10_n_obs,p10_n_sd),2),
+                               {method == 'M'} ~ round(rnorm(1,p10_m_obs,p10_m_sd),2),
+                               {method == 'NM'} ~ round(rnorm(1,p10_nm_obs,p10_nm_sd),2))) %>% 
+    mutate(p11 = case_when({p11 < 0} ~ 0,
+                           {p11 > 1} ~ 1,
+                           TRUE ~ p11),
+           p10 = case_when({p10 < 0} ~ 0,
+                           {p10 > 1} ~ 1,
+                           TRUE ~ p10)) %>% #just incase some probabilities are under 0 or above 1
+    ungroup() %>%
+    mutate(mu = (1-DND_TRUE)*p10 + DND_TRUE*p11) %>% #binomial parameter
+    mutate(count = rpois(n(),p10) + rbinom(n(),count_TRUE,p11)) %>% #for each cell, proba of FPE of p10 and for each of the individuals (count_TRUE), we do a binomial draw (detection)
+    mutate(DND = rbinom(n(),1,mu)) %>%#for the cell, we do a binomial draw (only 1 draw) %>%
+    mutate(count = case_when({metric == 'count'} ~ count,
+                           {metric == 'DND'} ~ NA),
+           DND = case_when({metric == 'count'} ~ NA,
+                           {metric == 'DND'} ~ DND)) %>% #removing count data if the metric was DND and vise-versa
+    mutate(DND_from_count = case_when({count > 0} ~ 1,
+                              {count == 0} ~ 0
+                              )) %>%
+    mutate(DND_all = case_when({metric == 'count'} ~ DND_from_count,
+                               {metric == 'DND'} ~ DND)) #DND all regroups both DND data converted from counts and direct DND observations
+  
+  return(Simulated_data)
+}
+```
+
+We supposed here that the probabilities of detecting two individuals in a cell were independent, so the observed number of individuals in a cell (count) is simulated by a binomial(1,count_TRUE,proba).
+
+Now we generate this Simulated_data table:
+
+```{r}
+Simulated_data <- simulated_data_function(Count_data_TRUE_long, Sampling_design, p11_n, p10_n, p11_m, p10_m, p11_nm, p10_nm, p11_n_sd, p10_n_sd, p11_m_sd, p10_m_sd, p11_nm_sd, p10_nm_sd) %>%
+  suppressWarnings()
+```
+
+# Significance tests
+
+Now that we have simulated data, we want to test whether a glm can find a significant effect of variables on the probability of detection.
+
+We will do a model for count data and another for DND data.
+
+## Count data model
+
+In the model on count data, the dependent variable is the proportion of individuals that were detected per quadrat. We assume that there are no FPE. Let's just check how many quadrats have FPE:
+
+```{r}
+Simulated_data_count <- Simulated_data %>%
+  filter(metric == 'count') %>%
+  group_by(species, quadrat, obs_id, metric, method, prop_modif) %>%
+  summarise(count_tot_TRUE = sum(count_TRUE), count_tot = sum(count)) %>%
+  mutate(FPE = case_when({count_tot > count_tot_TRUE} ~ TRUE,
+                         TRUE ~ FALSE)) %>%
+  mutate(prop_detect = case_when({count_tot_TRUE == 0} ~ NA,
+                                 TRUE ~ count_tot/count_tot_TRUE))
+```
+
+```{r}
+Simulated_data_count %>%
+  ggplot(aes(x = FPE)) +
+  geom_bar(width=.5) +
+  theme_bw()
+```
+
+Ok, we have less than 10% FPE at a quadrat scale. We do not study these.
+
+```{r}
+Simulated_data_count <- Simulated_data_count %>%
+  filter(FPE == FALSE) %>%
+  filter(count_tot_TRUE > 0)
+```
+
+```{r}
+Simulated_data_count %>%
+  ggplot(aes(x = prop_detect)) +
+  geom_density() +
+  theme_bw()
+```
+
+```{r}
+fit_count <- glmmTMB::glmmTMB(prop_detect ~ (1|species) + (1|species:quadrat) + (1|obs_id)
+                   + method
+                   ,
+                         data = Simulated_data_count, family = binomial(link = "logit"))
+
+summary(fit_count)
+```
+
+## DND data model
+
+```{r}
+Simulated_data_DND <- Simulated_data %>%
+  filter(metric == 'DND') %>%
+  group_by(species, quadrat, obs_id, metric, method, prop_modif) %>%
+  summarise(DND_tot_TRUE = sum(DND_TRUE), DND_tot = sum(DND)) %>%
+  mutate(FPE = case_when({DND_tot > DND_tot_TRUE} ~ TRUE,
+                         TRUE ~ FALSE)) %>%
+  mutate(prop_detect = case_when({DND_tot_TRUE == 0} ~ NA,
+                                 TRUE ~ DND_tot/DND_tot_TRUE))
+```
+
+```{r}
+Simulated_data_DND %>%
+  ggplot(aes(x = FPE)) +
+  geom_bar(width=.5) +
+  theme_bw()
+```
+
+```{r}
+Simulated_data_DND <- Simulated_data_DND %>%
+  filter(FPE == FALSE) %>%
+  filter(DND_tot_TRUE > 0)
+```
+
+```{r}
+Simulated_data_DND %>%
+  ggplot(aes(x = prop_detect)) +
+  geom_density() +
+  theme_bw()
+```
+
+```{r}
+fit_DND <- glmmTMB::glmmTMB(prop_detect ~ (1|species) + (1|species:quadrat) + (1|obs_id)
+                   + method
+                   ,
+                         data = filter(Simulated_data_DND, metric == 'DND'), family = binomial(link = "logit"))
+
+summary(fit_DND)
+```
+
+Let's check the statistical power.
+
+# Statistical power
+
+Now we will calculate the statistical power, defined as the number of iterations that show a significant effect for the method out of 1000 iterations.
+
+```{r}
+#Scenario 1: p11_X_sd = 0.1; p10_X_sd = 0.01
+#Scenario 2: p11_X_sd = 0.3; p10_X_sd = 0.03
+#Scenario 3: p11_X_sd = 0.5; p10_X_sd = 0.05
+
+N_scenario <- 3
+
+Power_table <- data.frame(matrix(data='', nrow = N_scenario*length(N_q_list)*length(N_o_list), ncol = 5))
+colnames(Power_table) <- c('scenario', 'N_q','N_o','power_count','power_DND')
+Power_table$scenario <- sort(rep(c(1:N_scenario),length(N_q_list)*length(N_o_list)))
+Power_table$N_q <- c(rep(N_q_list[1],length(N_o_list)),rep(N_q_list[2],length(N_o_list)))
+Power_table$N_o <- rep(N_o_list)
+
+for (scenario in c(1:N_scenario)) {
+  if (scenario == 1) {
+    p11_n_sd <- 0.1
+    p11_m_sd <- 0.1
+    p11_nm_sd <- 0.1
+    p10_n_sd <- 0.01
+    p10_m_sd <- 0.01
+    p10_nm_sd <- 0.01
+  }
+  
+  if (scenario == 2) {
+    p11_n_sd <- 0.3
+    p11_m_sd <- 0.3
+    p11_nm_sd <- 0.3
+    p10_n_sd <- 0.03
+    p10_m_sd <- 0.03
+    p10_nm_sd <- 0.03
+  }
+  
+  if (scenario == 3) {
+    p11_n_sd <- 0.5
+    p11_m_sd <- 0.5
+    p11_nm_sd <- 0.5
+    p10_n_sd <- 0.05
+    p10_m_sd <- 0.05
+    p10_nm_sd <- 0.05
+  }
+
+for (N_q in N_q_list){
+  for (N_o in N_o_list) {
+
+power_count <- 0
+power_DND <- 0
+
+for (i in c(1:1000)){
+
+  #simulating true data
+  Count_data_TRUE <- count_data_TRUE_function(N_s,N_q)
+
+  Count_data_TRUE_long <- Count_data_TRUE %>%
+  pivot_longer(cols = c(`(0,1]`:`(9,10]`), names_to = 'cell_column', values_to = 'count_TRUE_0')
+  
+  Count_data_TRUE_long <- Count_data_TRUE_long %>%
+  left_join(.,
+    Count_data_TRUE_long %>%
+  group_by(species, quadrat) %>%
+  summarise(count_tot_TRUE_0=sum(count_TRUE_0))
+  )
+
+  Count_data_TRUE_long <- modif_data_memory_sheets(prop_modif, Count_data_TRUE_long)
+
+  Count_data_TRUE_long <- Count_data_TRUE_long %>%
+  pivot_longer(cols = -c(species:cell_column),
+               names_to = 'prop_modif',
+               names_prefix = 'count_TRUE_',
+               values_to = 'count_TRUE') %>% #count_TRUE refers here to 'true' data in memory sheets compared to observation data from observers, but TRUE data can be modified in the memory sheets with induced extinction or colonisation
+  mutate(prop_modif = as.numeric(prop_modif)) %>%
+  relocate(prop_modif, .after = quadrat)
+
+  #simulating sampling design
+  Sampling_design <- sampling_design_function(N_s, N_q, N_o, prop_count, prop_method, prop_modif)
+
+  #simulating observation data
+  Simulated_data <- simulated_data_function(Count_data_TRUE_long, Sampling_design, p11_n, p10_n, p11_m, p10_m, p11_nm, p10_nm, p11_n_sd, p10_n_sd, p11_m_sd, p10_m_sd, p11_nm_sd, p10_nm_sd) %>%
+  suppressWarnings()
+  
+  Simulated_data_count <- Simulated_data %>%
+  filter(metric == 'count') %>%
+  group_by(species, quadrat, obs_id, metric, method, prop_modif) %>%
+  summarise(count_tot_TRUE = sum(count_TRUE), count_tot = sum(count)) %>%
+  mutate(FPE = case_when({count_tot > count_tot_TRUE} ~ TRUE,
+                         TRUE ~ FALSE)) %>%
+  mutate(prop_detect = case_when({count_tot_TRUE == 0} ~ NA,
+                                 TRUE ~ count_tot/count_tot_TRUE)) %>%
+  filter(FPE == FALSE) %>%
+  filter(count_tot_TRUE > 0)
+  
+  Simulated_data_DND <- Simulated_data %>%
+  filter(metric == 'DND') %>%
+  group_by(species, quadrat, obs_id, metric, method, prop_modif) %>%
+  summarise(DND_tot_TRUE = sum(DND_TRUE), DND_tot = sum(DND)) %>%
+  mutate(FPE = case_when({DND_tot > DND_tot_TRUE} ~ TRUE,
+                         TRUE ~ FALSE)) %>%
+  mutate(prop_detect = case_when({DND_tot_TRUE == 0} ~ NA,
+                                 TRUE ~ DND_tot/DND_tot_TRUE)) %>%
+  filter(FPE == FALSE) %>%
+  filter(DND_tot_TRUE > 0)
+  
+  
+  #models on count data (detection of individuals):
+  fit_count <- glmmTMB::glmmTMB(prop_detect ~ (1|species) + (1|species:quadrat) + (1|obs_id)
+                   + method
+                   ,
+                         data = Simulated_data_count, family = binomial(link = "logit"))
+
+  #models on DND data:
+  fit_DND <- glmmTMB::glmmTMB(prop_detect ~ (1|species) + (1|species:quadrat) + (1|obs_id)
+                   + method
+                   ,
+                         data = filter(Simulated_data_DND, metric == 'DND'), family = binomial(link = "logit"))
+
+  #obtaining level of significance for the methodN effect (count model):
+  p_count <- broom.mixed::tidy(fit_count) %>%
+    filter(term == 'methodN') %>%
+    pull(p.value)
+  if (p_count < 0.05 & !is.na(p_count)) {
+    power_count <- power_count + 1
+  }
+  
+  #obtaining level of significance for the methodN effect (DND model):
+  p_DND <- broom.mixed::tidy(fit_DND) %>%
+    filter(term == 'methodN') %>%
+    pull(p.value)
+  if (p_DND < 0.05 & !is.na(p_DND)) {
+    power_DND <- power_DND + 1
+  }
+  
+  print(i)
+}
+
+Power_table[Power_table$scenario == scenario & Power_table$N_q == N_q & Power_table$N_o == N_o,]$power_count <- power_count/1000
+Power_table[Power_table$scenario == scenario & Power_table$N_q == N_q & Power_table$N_o == N_o,]$power_DND <- power_DND/1000
+
+
+
+  }
+}
+
+}
+```
+
+```{r}
+#write.table(Power_table, "Power_table_4.csv", row.names = F, sep = ";")
+```
+
+```{r}
+Power_table <- read_delim("Power_table_2.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+```
+
+```{r}
+Power_table %>%
+  pivot_longer(cols = power_count:power_DND, names_to = 'proba', names_prefix = 'power_', values_to = 'power') %>%
+  #mutate(N_o = as.factor(N_o)) %>%
+  mutate(power = as.double(power)) %>%
+  ggplot(aes(x=N_o, y = power, col = proba)) +
+  geom_line() +
+  geom_point() +
+  geom_abline(intercept = 0.9, slope = 0, linetype = 'dashed') +
+  facet_grid(scenario ~ N_q, labeller = purrr::partial(label_both, sep = " = ")) +
+  scale_x_continuous(breaks = c(6,8)) +
+  theme_bw()
+```
+
+# References
+
+\[1\] Kéry, M. & Royle, J.A. (2016) *Applied Hierarchical Modeling in Ecology* AHM1 - 1.1.
